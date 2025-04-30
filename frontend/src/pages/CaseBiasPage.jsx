@@ -116,7 +116,7 @@ const CaseBiasPage = () => {
                     ← Back to Case 
                 </Link>
                 <div className={styles.caseContent}>
-                    <h1 className={styles.caseTitle}>{caseData.title} #{caseItem.id}</h1>
+                    <h1 className={styles.caseTitle}>{caseData.title} #{caseData.id}</h1>
                     <div className={styles.caseInfo}>
                         <p className={styles.caseDescription}>{caseData.description}</p>
                         <div className={styles.additionalInfo}>
