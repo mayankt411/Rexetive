@@ -1,5 +1,5 @@
 import sqlite3
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from jose import JWTError, jwt
@@ -15,7 +15,6 @@ from blockchain_utils import submit_to_chain, get_submission_from_chain
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
-
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
@@ -47,24 +46,10 @@ def init_db():
 
 init_db()
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-class WalletAuth(BaseModel):
-    wallet_address: str
-
 class User(BaseModel):
     wallet_address: str
     created_at: datetime
     reputation_created: bool
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    wallet_address: str
-    expires_at: int  
-
-class TokenData(BaseModel):
-    wallet_address: Optional[str] = None
 
 class ReputationStats(BaseModel):
     reputation_points: int
@@ -99,44 +84,6 @@ def get_user(wallet_address: str):
         reputation_created=bool(user_data[2])
     )
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt, int(expire.timestamp())
-
-async def get_current_user(authorization: str = Header(None)):
-    credentials_exception = HTTPException(
-        status_code=401,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
-    if not authorization:
-        raise credentials_exception
-        
-    try:
-        scheme, token = authorization.split()
-        if scheme.lower() != "bearer":
-            raise credentials_exception
-            
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        wallet_address: str = payload.get("sub")
-        
-        if wallet_address is None:
-            raise credentials_exception
-            
-        token_data = TokenData(wallet_address=wallet_address)
-    except (ValueError, JWTError):
-        raise credentials_exception
-        
-    user = get_user(wallet_address=token_data.wallet_address)
-    return user
-
 def create_blockchain_reputation(wallet_address: str):
     try:
         tx = SyncTransaction(client=sui_client)
@@ -166,7 +113,6 @@ async def get_user_reputation(wallet_address: str):
         objects_result = sui_client.get_objects(address=wallet_address)
         reputation_object_id = None
         objects_result = handle_result(objects_result)
-
 
         for obj in objects_result.data:
             if obj.object_type == f"{PACKAGE_ID}::{MODULE_NAME}::UserReputation":
@@ -206,7 +152,6 @@ async def update_user_reputation(wallet_address: str, points: int, nft_minted: b
         reputation_object_id = None
         objects_result = handle_result(objects_result)
 
-
         for obj in objects_result.data:
             if obj.object_type == f"{PACKAGE_ID}::{MODULE_NAME}::UserReputation":
                 reputation_object_id = obj.object_id
@@ -237,6 +182,23 @@ async def update_user_reputation(wallet_address: str, points: int, nft_minted: b
         print(f"Error updating reputation on blockchain: {str(e)}")
         return False
 
+async def get_current_user(wallet_address: str = Header(..., alias="X-Wallet-Address")):
+    """
+    Dependency to extract wallet address from a custom header
+    and retrieve or create the corresponding user.
+    """
+    if not wallet_address or not wallet_address.startswith("0x"):
+        raise HTTPException(status_code=400, detail="Invalid wallet address format")
+    
+    user = get_user(wallet_address)
+    
+    # Create blockchain reputation if needed
+    if not user.reputation_created:
+        reputation_created = create_blockchain_reputation(user.wallet_address)
+        if reputation_created:
+            user.reputation_created = True
+    
+    return user
 
 def add_auth_routes(app: FastAPI):
     app.add_middleware(
@@ -247,30 +209,6 @@ def add_auth_routes(app: FastAPI):
         allow_headers=["*"],
     )
     
-    @app.post("/wallet/auth", response_model=Token)
-    async def wallet_auth(wallet_data: WalletAuth):
-        if not wallet_data.wallet_address.startswith("0x"):
-            raise HTTPException(status_code=400, detail="Invalid wallet address format")
-        user = get_user(wallet_data.wallet_address)
-
-        if not user.reputation_created:
-            reputation_created = create_blockchain_reputation(user.wallet_address)
-            if reputation_created:
-                user.reputation_created = True
-
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token, expires_at = create_access_token(
-            data={"sub": user.wallet_address}, 
-            expires_delta=access_token_expires
-        )
-        
-        return Token(
-            access_token=access_token, 
-            token_type="bearer",
-            wallet_address=user.wallet_address,
-            expires_at=expires_at
-        )
-
     @app.get("/me", response_model=User)
     async def read_users_me(current_user: User = Depends(get_current_user)):
         return current_user

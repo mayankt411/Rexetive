@@ -6,30 +6,16 @@ const api = axios.create({
   timeout: 40000,
 });
 
-// Add request interceptor to include auth token
+// Add request interceptor to include wallet address in header
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    const walletAddress = localStorage.getItem('wallet_address');
+    if (walletAddress) {
+      config.headers['X-Wallet-Address'] = walletAddress;
     }
     return config;
   },
   (error) => Promise.reject(error)
-);
-
-// Add response interceptor to handle token expiration
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response && error.response.status === 401) {
-      // Clear local storage on authentication error
-      localStorage.removeItem('auth_token');
-      // Optional: redirect to login page
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
-  }
 );
 
 export default api;
